@@ -13,6 +13,10 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_DELAY_MS = 350;
 const API_TIMEOUT_MS = 8000;
 const TOTAL_FETCH_TIMEOUT_MS = 20000;
+const ORG_USAGE_PATH = `/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`;
+const ENTERPRISE_USAGE_PATH = GITHUB_ENTERPRISE
+  ? `/enterprises/${GITHUB_ENTERPRISE}/settings/billing/ai_credit/usage`
+  : null;
 
 const github = axios.create({
   baseURL: 'https://api.github.com',
@@ -25,6 +29,8 @@ const github = axios.create({
 });
 const usageCache = new Map();
 const inflightRequests = new Map();
+let useEnterprisePath = Boolean(ENTERPRISE_USAGE_PATH);
+let warnedEnterpriseFallback = false;
 
 function usageAmount(item) {
   return item.netAmount > 0 ? item.netAmount : item.grossAmount;
@@ -35,10 +41,10 @@ function usageQuantity(item) {
 }
 
 function usagePath() {
-  if (GITHUB_ENTERPRISE) {
-    return `/enterprises/${GITHUB_ENTERPRISE}/settings/billing/ai_credit/usage`;
+  if (useEnterprisePath && ENTERPRISE_USAGE_PATH) {
+    return ENTERPRISE_USAGE_PATH;
   }
-  return `/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`;
+  return ORG_USAGE_PATH;
 }
 
 function sleep(ms) {
@@ -83,11 +89,11 @@ function withTimeout(promise, timeoutMs) {
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
 }
 
-function usageBaseParams(year, month) {
+function usageBaseParams(year, month, enterpriseMode) {
   return {
     ...(year && { year }),
     ...(month && { month }),
-    ...(GITHUB_ENTERPRISE && GITHUB_ORG && { organization: GITHUB_ORG })
+    ...(enterpriseMode && GITHUB_ORG && { organization: GITHUB_ORG })
   };
 }
 
@@ -139,14 +145,35 @@ function buildUserUsage(username, usageItems) {
 }
 
 async function fetchUsage(username, year, month) {
-  const response = await github.get(usagePath(), {
-    params: {
-      ...usageBaseParams(year, month),
-      ...(username && { user: username })
-    }
-  });
+  const enterpriseMode = useEnterprisePath && Boolean(ENTERPRISE_USAGE_PATH);
+  const path = usagePath();
 
-  return response.data;
+  try {
+    const response = await github.get(path, {
+      params: {
+        ...usageBaseParams(year, month, enterpriseMode),
+        ...(username && { user: username })
+      }
+    });
+    return response.data;
+  } catch (error) {
+    if (enterpriseMode && error?.response?.status === 404) {
+      useEnterprisePath = false;
+      if (!warnedEnterpriseFallback) {
+        warnedEnterpriseFallback = true;
+        console.warn('Enterprise billing endpoint returned 404. Falling back to organization endpoint.');
+      }
+      const fallback = await github.get(ORG_USAGE_PATH, {
+        params: {
+          ...(year && { year }),
+          ...(month && { month }),
+          ...(username && { user: username })
+        }
+      });
+      return fallback.data;
+    }
+    throw error;
+  }
 }
 
 async function fetchOrganizationTotal(year, month) {
