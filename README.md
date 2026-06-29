@@ -114,13 +114,35 @@ When creating a fine-grained personal access token for this dashboard, grant it 
 7. Under "Organization permissions", expand "Administration" and select **Read** access
 8. Click "Generate token" and copy it to your `.env` file
 
-## Security Notes
+## Troubleshooting
 
-- Never commit your `.env` file with real credentials
-- Regularly rotate your fine-grained tokens
-- Use tokens with minimal scopes (read-only access is sufficient for this dashboard)
-- Monitor token usage in your GitHub security settings
-- Keep your `GITHUB_TOKEN` secret
+### 403 Forbidden Error
+
+If you see "403 Forbidden" errors when loading the dashboard:
+
+**Check your token permissions:**
+1. Visit `http://localhost:3000/api/test-token` to verify your token can access the required endpoints
+2. Ensure your fine-grained token has:
+   - **Organization Administration** (Read) - Required for `/settings/billing/ai_credit/usage`
+   - **Members** (Read) - Required for listing org members
+3. Verify you are an **organization owner** or have **org admin** access
+
+**Note:** The billing usage endpoint `GET /organizations/{org}/settings/billing/ai_credit/usage` is restricted and may only be available to organization owners. If you're not an org owner, request access from someone who is.
+
+**Quick test:**
+```bash
+curl -H "Authorization: Bearer YOUR_TOKEN" \
+  https://api.github.com/organizations/YOUR_ORG/settings/billing/ai_credit/usage
+```
+
+If this returns 403, your token doesn't have the necessary permissions.
+
+### No Users Displayed
+
+Ensure:
+- Your organization has members
+- At least one member has used Copilot credits in the selected time period
+- Your token has both Administration and Members read permissions
 
 ## Deployment
 
