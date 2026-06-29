@@ -8,76 +8,50 @@ app.use(express.static('public'));
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_ORG = process.env.GITHUB_ORG;
 
-// Fetch AI credit usage grouped by user
+// Fetch AI credit usage from org-level report
 async function getAICreditUsageByUser(year, month) {
   try {
-    // First, get list of org members
-    const membersResponse = await axios.get(
-      `https://api.github.com/orgs/${GITHUB_ORG}/members`,
+    const response = await axios.get(
+      `https://api.github.com/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`,
       {
         headers: {
           'Authorization': `Bearer ${GITHUB_TOKEN}`,
           'Accept': 'application/vnd.github+json',
           'X-GitHub-Api-Version': '2026-03-10'
         },
-        params: { per_page: 100 }
+        params: {
+          ...(year && { year }),
+          ...(month && { month })
+        }
       }
     );
-    
-    const members = membersResponse.data.map(m => m.login);
-    const userUsage = {};
 
-    // Query usage for each user
-    for (const username of members) {
-      try {
-        const response = await axios.get(
-          `https://api.github.com/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`,
-          {
-            headers: {
-              'Authorization': `Bearer ${GITHUB_TOKEN}`,
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2026-03-10'
-            },
-            params: {
-              user: username,
-              ...(year && { year }),
-              ...(month && { month })
-            }
-          }
-        );
+    const orgTotal = {
+      user: 'Organization Total',
+      totalCost: 0,
+      items: [],
+      models: {}
+    };
 
-        if (response.data.usageItems && response.data.usageItems.length > 0) {
-          userUsage[username] = {
-            user: username,
-            totalCost: 0,
-            items: [],
-            models: {}
+    if (Array.isArray(response.data.usageItems)) {
+      response.data.usageItems.forEach(item => {
+        const amount = item.netAmount > 0 ? item.netAmount : item.grossAmount;
+        orgTotal.totalCost += amount;
+        orgTotal.items.push(item);
+
+        if (!orgTotal.models[item.model]) {
+          orgTotal.models[item.model] = {
+            model: item.model,
+            quantity: 0,
+            cost: 0
           };
-
-          response.data.usageItems.forEach(item => {
-            // Use grossAmount since netAmount is often 0 due to discounts being applied differently
-            const amount = item.netAmount > 0 ? item.netAmount : item.grossAmount;
-            userUsage[username].totalCost += amount;
-            userUsage[username].items.push(item);
-
-            if (!userUsage[username].models[item.model]) {
-              userUsage[username].models[item.model] = {
-                model: item.model,
-                quantity: 0,
-                cost: 0
-              };
-            }
-            userUsage[username].models[item.model].quantity += item.grossQuantity;
-            userUsage[username].models[item.model].cost += amount;
-          });
         }
-      } catch (error) {
-        // Skip users where we can't fetch data
-        console.log(`Skipped user ${username}: ${error.response?.status || error.message}`);
-      }
+        orgTotal.models[item.model].quantity += item.grossQuantity;
+        orgTotal.models[item.model].cost += amount;
+      });
     }
 
-    return Object.values(userUsage).sort((a, b) => b.totalCost - a.totalCost);
+    return [orgTotal];
   } catch (error) {
     console.error('Error fetching AI credit usage:', error.message);
     throw error;
