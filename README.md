@@ -40,6 +40,7 @@ cp .env.example .env
 ```
 GITHUB_TOKEN=ghp_your_personal_access_token_here
 GITHUB_ORG=your_organization_name
+GITHUB_ENTERPRISE=your_enterprise_slug_if_org_is_enterprise_owned
 PORT=3000
 ```
 
@@ -77,9 +78,10 @@ GET /api/health
 
 ## GitHub API Reference
 
-This dashboard uses the GitHub REST API endpoint:
+This dashboard uses one of these GitHub REST API endpoints:
 ```
 GET /organizations/{org}/settings/billing/ai_credit/usage
+GET /enterprises/{enterprise}/settings/billing/ai_credit/usage
 ```
 
 See [GitHub Billing API Docs](https://docs.github.com/en/rest/billing/usage) for more details.
@@ -98,6 +100,8 @@ When creating a fine-grained personal access token for this dashboard, grant it 
 **Required Permissions:**
 - **Organization Administration** (Read)
   - Provides access to: `GET /organizations/{org}/settings/billing/ai_credit/usage`
+- **Enterprise Administration/Billing access** (for enterprise-owned orgs)
+  - Provides access to: `GET /enterprises/{enterprise}/settings/billing/ai_credit/usage`
 
 **Optional Permissions (if you want additional billing insights):**
 - Read access to billing budgets: `GET /organizations/{org}/settings/billing/budgets`
@@ -125,9 +129,10 @@ If you see "403 Forbidden" errors when loading the dashboard:
 2. Ensure your fine-grained token has:
    - **Organization Administration** (Read) - Required for `/settings/billing/ai_credit/usage`
    - **Members** (Read) - Required for listing org members
-3. Verify you are an **organization owner** or have **org admin** access
+3. For enterprise-owned orgs, set `GITHUB_ENTERPRISE` and ensure enterprise billing access
+4. Verify you are an **organization owner** or have **org admin** access
 
-**Note:** The billing usage endpoint `GET /organizations/{org}/settings/billing/ai_credit/usage` is restricted and may only be available to organization owners. If you're not an org owner, request access from someone who is.
+**Note:** For enterprise-owned orgs, org admins cannot use `?user=` on the organization endpoint. You must use the enterprise endpoint with `GITHUB_ENTERPRISE`.
 
 **Quick test:**
 ```bash

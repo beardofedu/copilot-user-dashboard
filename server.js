@@ -7,51 +7,138 @@ app.use(express.static('public'));
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_ORG = process.env.GITHUB_ORG;
+const GITHUB_ENTERPRISE = process.env.GITHUB_ENTERPRISE;
+const API_VERSION = '2026-03-10';
 
-// Fetch AI credit usage from org-level report
-async function getAICreditUsageByUser(year, month) {
-  try {
-    const response = await axios.get(
-      `https://api.github.com/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`,
-      {
-        headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2026-03-10'
-        },
-        params: {
-          ...(year && { year }),
-          ...(month && { month })
-        }
-      }
-    );
+const github = axios.create({
+  baseURL: 'https://api.github.com',
+  headers: {
+    'Authorization': `Bearer ${GITHUB_TOKEN}`,
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': API_VERSION
+  }
+});
 
-    const orgTotal = {
-      user: 'Organization Total',
-      totalCost: 0,
-      items: [],
-      models: {}
-    };
+function usageAmount(item) {
+  return item.netAmount > 0 ? item.netAmount : item.grossAmount;
+}
 
-    if (Array.isArray(response.data.usageItems)) {
-      response.data.usageItems.forEach(item => {
-        const amount = item.netAmount > 0 ? item.netAmount : item.grossAmount;
-        orgTotal.totalCost += amount;
-        orgTotal.items.push(item);
+function usageQuantity(item) {
+  return item.netQuantity > 0 ? item.netQuantity : item.grossQuantity;
+}
 
-        if (!orgTotal.models[item.model]) {
-          orgTotal.models[item.model] = {
-            model: item.model,
-            quantity: 0,
-            cost: 0
-          };
-        }
-        orgTotal.models[item.model].quantity += item.grossQuantity;
-        orgTotal.models[item.model].cost += amount;
-      });
+function usagePath() {
+  if (GITHUB_ENTERPRISE) {
+    return `/enterprises/${GITHUB_ENTERPRISE}/settings/billing/ai_credit/usage`;
+  }
+  return `/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`;
+}
+
+function usageBaseParams(year, month) {
+  return {
+    ...(year && { year }),
+    ...(month && { month }),
+    ...(GITHUB_ENTERPRISE && GITHUB_ORG && { organization: GITHUB_ORG })
+  };
+}
+
+async function listOrgMembers() {
+  const members = [];
+  const perPage = 100;
+  let page = 1;
+
+  while (true) {
+    const response = await github.get(`/orgs/${GITHUB_ORG}/members`, {
+      params: { per_page: perPage, page }
+    });
+    members.push(...response.data.map(member => member.login));
+    if (response.data.length < perPage) {
+      break;
+    }
+    page += 1;
+  }
+
+  return members;
+}
+
+function buildUserUsage(username, usageItems) {
+  const data = {
+    user: username,
+    totalCost: 0,
+    items: [],
+    models: {}
+  };
+
+  usageItems.forEach(item => {
+    const amount = usageAmount(item);
+    data.totalCost += amount;
+    data.items.push(item);
+
+    if (!data.models[item.model]) {
+      data.models[item.model] = {
+        model: item.model,
+        quantity: 0,
+        cost: 0
+      };
     }
 
-    return [orgTotal];
+    data.models[item.model].quantity += usageQuantity(item);
+    data.models[item.model].cost += amount;
+  });
+
+  return data;
+}
+
+async function fetchUsage(username, year, month) {
+  const response = await github.get(usagePath(), {
+    params: {
+      ...usageBaseParams(year, month),
+      ...(username && { user: username })
+    }
+  });
+
+  return response.data;
+}
+
+async function fetchOrganizationTotal(year, month) {
+  const data = await fetchUsage(undefined, year, month);
+  const usageItems = Array.isArray(data.usageItems) ? data.usageItems : [];
+  return buildUserUsage('Organization Total', usageItems);
+}
+
+// Fetch AI credit usage grouped by user
+async function getAICreditUsageByUser(year, month) {
+  try {
+    const members = await listOrgMembers();
+    if (members.length === 0) {
+      return [await fetchOrganizationTotal(year, month)];
+    }
+
+    const userRows = [];
+    const batchSize = 10;
+
+    for (let i = 0; i < members.length; i += batchSize) {
+      const batch = members.slice(i, i + batchSize);
+      const batchResults = await Promise.all(
+        batch.map(async username => {
+          try {
+            const data = await fetchUsage(username, year, month);
+            const usageItems = Array.isArray(data.usageItems) ? data.usageItems : [];
+            const row = buildUserUsage(username, usageItems);
+            return row.totalCost > 0 ? row : null;
+          } catch (error) {
+            return null;
+          }
+        })
+      );
+      userRows.push(...batchResults.filter(Boolean));
+    }
+
+    if (userRows.length === 0) {
+      return [await fetchOrganizationTotal(year, month)];
+    }
+
+    return userRows.sort((a, b) => b.totalCost - a.totalCost);
   } catch (error) {
     console.error('Error fetching AI credit usage:', error.message);
     throw error;
@@ -87,38 +174,31 @@ app.get('/api/health', (req, res) => {
 // Test token permissions
 app.get('/api/test-token', async (req, res) => {
   try {
-    // Test 1: Can we access org members?
-    const membersResponse = await axios.get(
-      `https://api.github.com/orgs/${GITHUB_ORG}/members`,
-      {
-        headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2026-03-10'
-        },
-        params: { per_page: 1 }
-      }
-    );
+    const membersResponse = await github.get(`/orgs/${GITHUB_ORG}/members`, {
+      params: { per_page: 1 }
+    });
+    const sampleUser = req.query.user || membersResponse.data[0]?.login;
+    const billingResponse = await fetchUsage(undefined);
 
-    // Test 2: Can we access billing usage (without user filter)?
-    const billingResponse = await axios.get(
-      `https://api.github.com/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`,
-      {
-        headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2026-03-10'
-        }
+    let userFilterAccess = 'unknown';
+    if (sampleUser) {
+      try {
+        await fetchUsage(sampleUser);
+        userFilterAccess = 'OK';
+      } catch (error) {
+        userFilterAccess = `FAILED (${error.response?.status || 'error'})`;
       }
-    );
+    }
 
     res.json({
       status: 'ok',
       checks: {
+        mode: GITHUB_ENTERPRISE ? 'enterprise' : 'organization',
         members_access: 'OK',
         billing_access: 'OK',
-        members_count: membersResponse.data.length,
-        has_usage_data: !!billingResponse.data.usageItems
+        sample_user: sampleUser || null,
+        user_filter_access: userFilterAccess,
+        has_usage_data: !!billingResponse.usageItems
       }
     });
   } catch (error) {
@@ -132,17 +212,9 @@ app.get('/api/test-token', async (req, res) => {
 // Debug endpoint to see raw API response
 app.get('/api/debug-raw', async (req, res) => {
   try {
-    const response = await axios.get(
-      `https://api.github.com/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`,
-      {
-        headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2026-03-10'
-        }
-      }
-    );
-    res.json(response.data);
+    const { year, month, user } = req.query;
+    const data = await fetchUsage(user, year, month);
+    res.json(data);
   } catch (error) {
     res.status(error.response?.status || 500).json({
       error: error.message,
@@ -155,4 +227,8 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Dashboard server running on http://localhost:${PORT}`);
   console.log(`Organization: ${GITHUB_ORG}`);
+  console.log(`Billing mode: ${GITHUB_ENTERPRISE ? 'enterprise' : 'organization'}`);
+  if (GITHUB_ENTERPRISE) {
+    console.log(`Enterprise: ${GITHUB_ENTERPRISE}`);
+  }
 });
