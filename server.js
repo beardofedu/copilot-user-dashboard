@@ -13,6 +13,8 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_DELAY_MS = 350;
 const API_TIMEOUT_MS = 8000;
 const TOTAL_FETCH_TIMEOUT_MS = 20000;
+const DEFAULT_USER_LIMIT = Number(process.env.USER_MONTHLY_LIMIT || 250);
+const DEFAULT_NEAR_LIMIT_PERCENT = Number(process.env.NEAR_LIMIT_PERCENT || 0.8);
 const ORG_USAGE_PATH = `/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`;
 const ENTERPRISE_USAGE_PATH = GITHUB_ENTERPRISE
   ? `/enterprises/${GITHUB_ENTERPRISE}/settings/billing/ai_credit/usage`
@@ -79,6 +81,62 @@ function isSecondaryRateLimit(error) {
   const status = error?.response?.status;
   const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
   return status === 403 && message.includes('secondary rate limit');
+}
+
+function parsePositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNearLimitPercent(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 && parsed < 1 ? parsed : fallback;
+}
+
+function statusForUser(totalCost, userLimit, nearLimitPercent) {
+  if (userLimit <= 0) {
+    return 'ok';
+  }
+  const ratio = totalCost / userLimit;
+  if (ratio >= 1) {
+    return 'at_limit';
+  }
+  if (ratio >= nearLimitPercent) {
+    return 'near_limit';
+  }
+  return 'ok';
+}
+
+function enrichUsers(rows, userLimit, nearLimitPercent) {
+  const statusRank = { at_limit: 0, near_limit: 1, ok: 2 };
+
+  return rows
+    .map(row => {
+      const ratio = userLimit > 0 ? row.totalCost / userLimit : 0;
+      const topModels = Object.values(row.models)
+        .sort((a, b) => b.cost - a.cost)
+        .slice(0, 3)
+        .map(model => ({
+          model: model.model,
+          cost: model.cost
+        }));
+
+      return {
+        ...row,
+        userLimit,
+        percentOfLimit: ratio * 100,
+        remainingToLimit: Math.max(userLimit - row.totalCost, 0),
+        status: statusForUser(row.totalCost, userLimit, nearLimitPercent),
+        topModels
+      };
+    })
+    .sort((a, b) => {
+      const statusDiff = statusRank[a.status] - statusRank[b.status];
+      if (statusDiff !== 0) {
+        return statusDiff;
+      }
+      return b.percentOfLimit - a.percentOfLimit;
+    });
 }
 
 function withTimeout(promise, timeoutMs) {
@@ -251,9 +309,35 @@ async function getAICreditUsageByUser(year, month) {
 // API endpoint to get usage data
 app.get('/api/usage', async (req, res) => {
   try {
-    const { year, month } = req.query;
-    const usageData = await getAICreditUsageByUser(year, month);
-    res.json(usageData);
+    const { year, month, limit, near_limit_percent } = req.query;
+    const userLimit = parsePositiveNumber(limit, DEFAULT_USER_LIMIT);
+    const nearLimitPercent = parseNearLimitPercent(near_limit_percent, DEFAULT_NEAR_LIMIT_PERCENT);
+
+    const usageRows = await getAICreditUsageByUser(year, month);
+    const users = enrichUsers(usageRows, userLimit, nearLimitPercent);
+    const userLevelAvailable = users.some(row => row.user !== 'Organization Total');
+    const scopedUsers = users.filter(row => row.user !== 'Organization Total');
+
+    const summaryUsers = userLevelAvailable ? scopedUsers : users;
+    const nearLimitUsers = summaryUsers.filter(row => row.status === 'near_limit').length;
+    const atLimitUsers = summaryUsers.filter(row => row.status === 'at_limit').length;
+    const totalSpend = summaryUsers.reduce((sum, row) => sum + row.totalCost, 0);
+
+    res.json({
+      meta: {
+        userLevelAvailable,
+        mode: useEnterprisePath ? 'enterprise' : 'organization',
+        userLimit,
+        nearLimitPercent
+      },
+      summary: {
+        totalSpend,
+        activeUsers: summaryUsers.length,
+        nearLimitUsers,
+        atLimitUsers
+      },
+      users
+    });
   } catch (error) {
     console.error('Full error:', error.response?.data || error.message);
     const statusCode = error.response?.status || 500;

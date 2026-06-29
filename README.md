@@ -41,6 +41,8 @@ cp .env.example .env
 GITHUB_TOKEN=ghp_your_personal_access_token_here
 GITHUB_ORG=your_organization_name
 GITHUB_ENTERPRISE=your_enterprise_slug_if_org_is_enterprise_owned
+USER_MONTHLY_LIMIT=250
+NEAR_LIMIT_PERCENT=0.8
 PORT=3000
 ```
 

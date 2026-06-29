@@ -20,7 +20,7 @@
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <!-- Filters -->
       <div class="bg-white rounded-lg shadow p-6 mb-8">
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-2">Year</label>
             <select id="yearSelect" class="w-full px-3 py-2 border border-gray-300 rounded-md">
@@ -45,6 +45,14 @@
               <option value="12">December</option>
             </select>
           </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">User Limit ($)</label>
+            <input id="limitInput" type="number" min="1" step="1" value="250" class="w-full px-3 py-2 border border-gray-300 rounded-md" />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Near Limit (%)</label>
+            <input id="nearLimitInput" type="number" min="1" max="99" step="1" value="80" class="w-full px-3 py-2 border border-gray-300 rounded-md" />
+          </div>
           <div class="flex items-end">
             <button id="refreshBtn" class="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
               Refresh Data
@@ -64,19 +72,21 @@
           <p class="text-3xl font-bold text-gray-900 mt-2" id="activeUsers">0</p>
         </div>
         <div class="bg-white rounded-lg shadow p-6">
-          <p class="text-gray-600 text-sm">Avg Per User</p>
-          <p class="text-3xl font-bold text-gray-900 mt-2" id="avgPerUser">$0.00</p>
+          <p class="text-gray-600 text-sm">Near Limit</p>
+          <p class="text-3xl font-bold text-amber-600 mt-2" id="nearLimitUsers">0</p>
         </div>
         <div class="bg-white rounded-lg shadow p-6">
-          <p class="text-gray-600 text-sm">Top Spender</p>
-          <p class="text-3xl font-bold text-gray-900 mt-2" id="topSpender">—</p>
+          <p class="text-gray-600 text-sm">At/Over Limit</p>
+          <p class="text-3xl font-bold text-red-600 mt-2" id="atLimitUsers">0</p>
         </div>
       </div>
+
+      <div id="notice" class="hidden mb-4 rounded-md border border-amber-300 bg-amber-50 p-4 text-sm text-amber-800"></div>
 
       <!-- Users Table -->
       <div class="bg-white rounded-lg shadow overflow-hidden">
         <div class="px-6 py-4 border-b border-gray-200">
-          <h2 class="text-lg font-semibold text-gray-900">Spend by User</h2>
+          <h2 class="text-lg font-semibold text-gray-900">Users Near / At Limit</h2>
         </div>
         <div class="overflow-x-auto">
           <table class="w-full">
@@ -84,13 +94,14 @@
               <tr>
                 <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">User</th>
                 <th class="px-6 py-3 text-right text-sm font-semibold text-gray-900">Total Cost</th>
-                <th class="px-6 py-3 text-right text-sm font-semibold text-gray-900">Tokens Used</th>
-                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Top Model</th>
+                <th class="px-6 py-3 text-right text-sm font-semibold text-gray-900">% of Limit</th>
+                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Status</th>
+                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Top Models Used</th>
               </tr>
             </thead>
             <tbody id="usersTableBody">
               <tr>
-                <td colspan="4" class="px-6 py-8 text-center text-gray-500">Loading...</td>
+                <td colspan="5" class="px-6 py-8 text-center text-gray-500">Loading...</td>
               </tr>
             </tbody>
           </table>
@@ -125,6 +136,12 @@
         const params = new URLSearchParams();
         if (year) params.append('year', year);
         if (month) params.append('month', month);
+        const limitValue = Number(document.getElementById('limitInput').value);
+        const nearLimitValue = Number(document.getElementById('nearLimitInput').value);
+        if (Number.isFinite(limitValue) && limitValue > 0) params.append('limit', String(limitValue));
+        if (Number.isFinite(nearLimitValue) && nearLimitValue > 0 && nearLimitValue < 100) {
+          params.append('near_limit_percent', String(nearLimitValue / 100));
+        }
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 25000);
@@ -135,48 +152,69 @@
         if (response.ok) {
           displayData(data);
         } else {
-          tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-red-600">${data.error || 'Failed to load data'}</td></tr>`;
+          tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-8 text-center text-red-600">${data.error || 'Failed to load data'}</td></tr>`;
         }
       } catch (error) {
         const message = error.name === 'AbortError'
           ? 'Request timed out. Try again.'
           : `Failed to load data: ${error.message}`;
-        tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-red-600">${message}</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="5" class="px-6 py-8 text-center text-red-600">${message}</td></tr>`;
       } finally {
         refreshBtn.disabled = false;
         refreshBtn.textContent = 'Refresh Data';
       }
     }
 
-    function displayData(usersData) {
+    function statusBadge(status) {
+      if (status === 'at_limit') return '<span class="inline-flex rounded-full bg-red-100 px-2 py-1 text-xs font-semibold text-red-700">At / Over limit</span>';
+      if (status === 'near_limit') return '<span class="inline-flex rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">Near limit</span>';
+      return '<span class="inline-flex rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">Healthy</span>';
+    }
+
+    function displayData(payload) {
+      const usersData = Array.isArray(payload?.users) ? payload.users : [];
+      const summary = payload?.summary || {};
+      const meta = payload?.meta || {};
+
+      const notice = document.getElementById('notice');
+      if (meta.userLevelAvailable === false) {
+        notice.classList.remove('hidden');
+        notice.textContent = 'User-level data is unavailable with the current endpoint/permissions. Showing organization totals.';
+      } else {
+        notice.classList.add('hidden');
+        notice.textContent = '';
+      }
+
       if (!Array.isArray(usersData) || usersData.length === 0) {
         document.getElementById('usersTableBody').innerHTML = 
-          '<tr><td colspan="4" class="px-6 py-8 text-center text-gray-500">No data available</td></tr>';
+          '<tr><td colspan="5" class="px-6 py-8 text-center text-gray-500">No data available</td></tr>';
         return;
       }
 
-      // Update summary stats
-      const totalSpend = usersData.reduce((sum, u) => sum + u.totalCost, 0);
-      const avgPerUser = usersData.length > 0 ? totalSpend / usersData.length : 0;
-      const topSpender = usersData[0]?.user || '—';
-
-      document.getElementById('totalSpend').textContent = `$${totalSpend.toFixed(2)}`;
-      document.getElementById('activeUsers').textContent = usersData.length;
-      document.getElementById('avgPerUser').textContent = `$${avgPerUser.toFixed(2)}`;
-      document.getElementById('topSpender').textContent = topSpender;
+      document.getElementById('totalSpend').textContent = `$${(summary.totalSpend || 0).toFixed(2)}`;
+      document.getElementById('activeUsers').textContent = summary.activeUsers || 0;
+      document.getElementById('nearLimitUsers').textContent = summary.nearLimitUsers || 0;
+      document.getElementById('atLimitUsers').textContent = summary.atLimitUsers || 0;
 
       // Update table
       const tbody = document.getElementById('usersTableBody');
       tbody.innerHTML = usersData.map(user => {
-        const topModel = Object.values(user.models).sort((a, b) => b.cost - a.cost)[0];
-        const totalTokens = Object.values(user.models).reduce((sum, m) => sum + m.quantity, 0);
+        const topModels = Array.isArray(user.topModels) && user.topModels.length > 0
+          ? user.topModels.map(model => `${model.model} ($${model.cost.toFixed(2)})`).join(', ')
+          : '—';
+        const rowClass = user.status === 'at_limit'
+          ? 'bg-red-50'
+          : user.status === 'near_limit'
+            ? 'bg-amber-50'
+            : '';
 
         return `
-          <tr class="border-b border-gray-200 hover:bg-gray-50">
+          <tr class="border-b border-gray-200 hover:bg-gray-50 ${rowClass}">
             <td class="px-6 py-4 text-sm text-gray-900 font-medium">${user.user}</td>
             <td class="px-6 py-4 text-sm text-right text-gray-900">$${user.totalCost.toFixed(2)}</td>
-            <td class="px-6 py-4 text-sm text-right text-gray-600">${totalTokens.toLocaleString()}</td>
-            <td class="px-6 py-4 text-sm text-gray-600">${topModel?.model || '—'}</td>
+            <td class="px-6 py-4 text-sm text-right text-gray-900 font-semibold">${user.percentOfLimit.toFixed(1)}%</td>
+            <td class="px-6 py-4 text-sm">${statusBadge(user.status)}</td>
+            <td class="px-6 py-4 text-sm text-gray-600">${topModels}</td>
           </tr>
         `;
       }).join('');
@@ -186,6 +224,8 @@
     document.getElementById('refreshBtn').addEventListener('click', loadUsageData);
     document.getElementById('yearSelect').addEventListener('change', loadUsageData);
     document.getElementById('monthSelect').addEventListener('change', loadUsageData);
+    document.getElementById('limitInput').addEventListener('change', loadUsageData);
+    document.getElementById('nearLimitInput').addEventListener('change', loadUsageData);
 
     // Initial load
     loadUsageData();
