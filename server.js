@@ -35,41 +35,41 @@ function usagePath() {
   if (GITHUB_ENTERPRISE) {
     return `/enterprises/${GITHUB_ENTERPRISE}/settings/billing/ai_credit/usage`;
   }
-
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  function cacheKey(year, month) {
-    return `${year || 'current'}-${month || 'current'}`;
-  }
-
-  function getCachedUsage(year, month) {
-    const key = cacheKey(year, month);
-    const entry = usageCache.get(key);
-    if (!entry) {
-      return null;
-    }
-    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
-      usageCache.delete(key);
-      return null;
-    }
-    return entry.data;
-  }
-
-  function setCachedUsage(year, month, data) {
-    usageCache.set(cacheKey(year, month), {
-      timestamp: Date.now(),
-      data
-    });
-  }
-
-  function isSecondaryRateLimit(error) {
-    const status = error?.response?.status;
-    const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
-    return status === 403 && message.includes('secondary rate limit');
-  }
   return `/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function cacheKey(year, month) {
+  return `${year || 'current'}-${month || 'current'}`;
+}
+
+function getCachedUsage(year, month) {
+  const key = cacheKey(year, month);
+  const entry = usageCache.get(key);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+    usageCache.delete(key);
+    return null;
+  }
+  return entry.data;
+}
+
+function setCachedUsage(year, month, data) {
+  usageCache.set(cacheKey(year, month), {
+    timestamp: Date.now(),
+    data
+  });
+}
+
+function isSecondaryRateLimit(error) {
+  const status = error?.response?.status;
+  const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
+  return status === 403 && message.includes('secondary rate limit');
 }
 
 function usageBaseParams(year, month) {
