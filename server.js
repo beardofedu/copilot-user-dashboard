@@ -11,9 +11,12 @@ const GITHUB_ENTERPRISE = process.env.GITHUB_ENTERPRISE;
 const API_VERSION = '2026-03-10';
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_DELAY_MS = 350;
+const API_TIMEOUT_MS = 8000;
+const TOTAL_FETCH_TIMEOUT_MS = 20000;
 
 const github = axios.create({
   baseURL: 'https://api.github.com',
+  timeout: API_TIMEOUT_MS,
   headers: {
     'Authorization': `Bearer ${GITHUB_TOKEN}`,
     'Accept': 'application/vnd.github+json',
@@ -70,6 +73,14 @@ function isSecondaryRateLimit(error) {
   const status = error?.response?.status;
   const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
   return status === 403 && message.includes('secondary rate limit');
+}
+
+function withTimeout(promise, timeoutMs) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
 }
 
 function usageBaseParams(year, month) {
@@ -157,7 +168,7 @@ async function getAICreditUsageByUser(year, month) {
     return inFlight;
   }
 
-  const fetchPromise = (async () => {
+  const fetchPromise = withTimeout((async () => {
   try {
     const members = await listOrgMembers();
     if (members.length === 0) {
@@ -199,7 +210,12 @@ async function getAICreditUsageByUser(year, month) {
   } finally {
     inflightRequests.delete(key);
   }
-  })();
+  })(), TOTAL_FETCH_TIMEOUT_MS).catch(async () => {
+    const total = [await fetchOrganizationTotal(year, month)];
+    setCachedUsage(year, month, total);
+    inflightRequests.delete(key);
+    return total;
+  });
 
   inflightRequests.set(key, fetchPromise);
   return fetchPromise;

@@ -114,22 +114,37 @@
     async function loadUsageData() {
       const year = document.getElementById('yearSelect').value;
       const month = document.getElementById('monthSelect').value;
+      const refreshBtn = document.getElementById('refreshBtn');
+      const tbody = document.getElementById('usersTableBody');
+
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = 'Loading...';
+      tbody.innerHTML = '<tr><td colspan="4" class="px-6 py-8 text-center text-gray-500">Loading...</td></tr>';
 
       try {
         const params = new URLSearchParams();
         if (year) params.append('year', year);
         if (month) params.append('month', month);
 
-        const response = await fetch(`/api/usage?${params}`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 25000);
+        const response = await fetch(`/api/usage?${params}`, { signal: controller.signal });
+        clearTimeout(timeout);
         const data = await response.json();
 
         if (response.ok) {
           displayData(data);
         } else {
-          alert('Error: ' + data.error);
+          tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-red-600">${data.error || 'Failed to load data'}</td></tr>`;
         }
       } catch (error) {
-        alert('Failed to load data: ' + error.message);
+        const message = error.name === 'AbortError'
+          ? 'Request timed out. Try again.'
+          : `Failed to load data: ${error.message}`;
+        tbody.innerHTML = `<tr><td colspan="4" class="px-6 py-8 text-center text-red-600">${message}</td></tr>`;
+      } finally {
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = 'Refresh Data';
       }
     }
 
