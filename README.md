@@ -91,10 +91,35 @@ See [GitHub Billing API Docs](https://docs.github.com/en/rest/billing/usage) for
 - **Unit Types**: Typically "tokens" for AI usage (input/output tokens)
 - **Models**: Claude, GPT-4, CodeX, etc.
 
+## Fine-Grained Token Permissions
+
+When creating a fine-grained personal access token for this dashboard, grant it **Organization Administration** read permissions:
+
+**Required Permissions:**
+- **Organization Administration** (Read)
+  - Provides access to: `GET /organizations/{org}/settings/billing/ai_credit/usage`
+
+**Optional Permissions (if you want additional billing insights):**
+- Read access to billing budgets: `GET /organizations/{org}/settings/billing/budgets`
+- Read access to premium requests: `GET /organizations/{org}/settings/billing/premium_request/usage`
+- Read access to general billing: `GET /organizations/{org}/settings/billing/usage`
+
+**Steps to create the token:**
+1. Go to [GitHub Settings > Developer settings > Personal access tokens > Fine-grained tokens](https://github.com/settings/tokens?type=beta)
+2. Click "Generate new token"
+3. Name it: `copilot-dashboard`
+4. Set expiration as needed
+5. Under "Resource owner", select your organization
+6. Under "Repository access", select "All repositories" or specific ones
+7. Under "Organization permissions", expand "Administration" and select **Read** access
+8. Click "Generate token" and copy it to your `.env` file
+
 ## Security Notes
 
 - Never commit your `.env` file with real credentials
-- Use GitHub organization PAT with minimal required scopes
+- Regularly rotate your fine-grained tokens
+- Use tokens with minimal scopes (read-only access is sufficient for this dashboard)
+- Monitor token usage in your GitHub security settings
 - Keep your `GITHUB_TOKEN` secret
 
 ## Deployment
