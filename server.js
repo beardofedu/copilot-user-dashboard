@@ -8,31 +8,8 @@ app.use(express.static('public'));
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_ORG = process.env.GITHUB_ORG;
 
-// Get list of organization members
-async function getOrgMembers() {
-  try {
-    const response = await axios.get(
-      `https://api.github.com/orgs/${GITHUB_ORG}/members`,
-      {
-        headers: {
-          'Authorization': `Bearer ${GITHUB_TOKEN}`,
-          'Accept': 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2026-03-10'
-        },
-        params: {
-          per_page: 100
-        }
-      }
-    );
-    return response.data.map(member => member.login);
-  } catch (error) {
-    console.error('Error fetching org members:', error.message);
-    return [];
-  }
-}
-
-// Fetch AI credit usage for a specific user
-async function getUserUsage(username, year, month) {
+// Fetch AI credit usage grouped by user
+async function getAICreditUsageByUser(year, month) {
   try {
     const response = await axios.get(
       `https://api.github.com/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`,
@@ -43,60 +20,42 @@ async function getUserUsage(username, year, month) {
           'X-GitHub-Api-Version': '2026-03-10'
         },
         params: {
-          user: username,
           ...(year && { year }),
           ...(month && { month })
         }
       }
     );
 
-    const userData = {
-      user: username,
-      totalCost: 0,
-      items: [],
-      models: {}
-    };
-
-    if (response.data.usageItems) {
+    const userUsage = {};
+    
+    if (response.data.usageItems && Array.isArray(response.data.usageItems)) {
       response.data.usageItems.forEach(item => {
-        userData.totalCost += item.netAmount;
-        userData.items.push(item);
-
-        if (!userData.models[item.model]) {
-          userData.models[item.model] = {
+        const user = response.data.user || 'Organization Total';
+        if (!userUsage[user]) {
+          userUsage[user] = {
+            user,
+            totalCost: 0,
+            items: [],
+            models: {}
+          };
+        }
+        
+        userUsage[user].totalCost += item.netAmount;
+        userUsage[user].items.push(item);
+        
+        if (!userUsage[user].models[item.model]) {
+          userUsage[user].models[item.model] = {
             model: item.model,
             quantity: 0,
             cost: 0
           };
         }
-        userData.models[item.model].quantity += item.netQuantity;
-        userData.models[item.model].cost += item.netAmount;
+        userUsage[user].models[item.model].quantity += item.netQuantity;
+        userUsage[user].models[item.model].cost += item.netAmount;
       });
     }
-
-    return userData;
-  } catch (error) {
-    console.error(`Error fetching usage for ${username}:`, error.message);
-    return null;
-  }
-}
-
-// Fetch AI credit usage grouped by user
-async function getAICreditUsageByUser(year, month) {
-  try {
-    const members = await getOrgMembers();
-    if (members.length === 0) {
-      throw new Error('No organization members found');
-    }
-
-    // Fetch usage for each member in parallel
-    const usagePromises = members.map(username => getUserUsage(username, year, month));
-    const usageResults = await Promise.all(usagePromises);
-
-    // Filter out null/empty results and sort by cost
-    return usageResults
-      .filter(user => user && user.totalCost > 0)
-      .sort((a, b) => b.totalCost - a.totalCost);
+    
+    return Object.values(userUsage).sort((a, b) => b.totalCost - a.totalCost);
   } catch (error) {
     console.error('Error fetching AI credit usage:', error.message);
     throw error;
@@ -169,6 +128,28 @@ app.get('/api/test-token', async (req, res) => {
   } catch (error) {
     res.status(error.response?.status || 500).json({
       error: error.response?.data?.message || error.message,
+      status: error.response?.status
+    });
+  }
+});
+
+// Debug endpoint to see raw API response
+app.get('/api/debug-raw', async (req, res) => {
+  try {
+    const response = await axios.get(
+      `https://api.github.com/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`,
+      {
+        headers: {
+          'Authorization': `Bearer ${GITHUB_TOKEN}`,
+          'Accept': 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2026-03-10'
+        }
+      }
+    );
+    res.json(response.data);
+  } catch (error) {
+    res.status(error.response?.status || 500).json({
+      error: error.message,
       status: error.response?.status
     });
   }
