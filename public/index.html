@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copilot AI Spend Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50">
+  <div class="min-h-screen">
+    <!-- Header -->
+    <header class="bg-white shadow">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        <h1 class="text-3xl font-bold text-gray-900">🤖 Copilot AI Spend Dashboard</h1>
+        <p class="text-gray-600 mt-1">Monitor AI credit usage by team member</p>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <!-- Filters -->
+      <div class="bg-white rounded-lg shadow p-6 mb-8">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Year</label>
+            <select id="yearSelect" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+              <option value="">Current Year</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-2">Month</label>
+            <select id="monthSelect" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+              <option value="">Current Month</option>
+              <option value="1">January</option>
+              <option value="2">February</option>
+              <option value="3">March</option>
+              <option value="4">April</option>
+              <option value="5">May</option>
+              <option value="6">June</option>
+              <option value="7">July</option>
+              <option value="8">August</option>
+              <option value="9">September</option>
+              <option value="10">October</option>
+              <option value="11">November</option>
+              <option value="12">December</option>
+            </select>
+          </div>
+          <div class="flex items-end">
+            <button id="refreshBtn" class="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+              Refresh Data
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Summary Stats -->
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+        <div class="bg-white rounded-lg shadow p-6">
+          <p class="text-gray-600 text-sm">Total Spend</p>
+          <p class="text-3xl font-bold text-gray-900 mt-2" id="totalSpend">$0.00</p>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+          <p class="text-gray-600 text-sm">Active Users</p>
+          <p class="text-3xl font-bold text-gray-900 mt-2" id="activeUsers">0</p>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+          <p class="text-gray-600 text-sm">Avg Per User</p>
+          <p class="text-3xl font-bold text-gray-900 mt-2" id="avgPerUser">$0.00</p>
+        </div>
+        <div class="bg-white rounded-lg shadow p-6">
+          <p class="text-gray-600 text-sm">Top Spender</p>
+          <p class="text-3xl font-bold text-gray-900 mt-2" id="topSpender">—</p>
+        </div>
+      </div>
+
+      <!-- Users Table -->
+      <div class="bg-white rounded-lg shadow overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-200">
+          <h2 class="text-lg font-semibold text-gray-900">Spend by User</h2>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full">
+            <thead class="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">User</th>
+                <th class="px-6 py-3 text-right text-sm font-semibold text-gray-900">Total Cost</th>
+                <th class="px-6 py-3 text-right text-sm font-semibold text-gray-900">Tokens Used</th>
+                <th class="px-6 py-3 text-left text-sm font-semibold text-gray-900">Top Model</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody">
+              <tr>
+                <td colspan="4" class="px-6 py-8 text-center text-gray-500">Loading...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // Populate year dropdown
+    const currentYear = new Date().getFullYear();
+    const yearSelect = document.getElementById('yearSelect');
+    for (let i = 0; i < 3; i++) {
+      const option = document.createElement('option');
+      option.value = currentYear - i;
+      option.textContent = currentYear - i;
+      yearSelect.appendChild(option);
+    }
+
+    // Fetch and display data
+    async function loadUsageData() {
+      const year = document.getElementById('yearSelect').value;
+      const month = document.getElementById('monthSelect').value;
+
+      try {
+        const params = new URLSearchParams();
+        if (year) params.append('year', year);
+        if (month) params.append('month', month);
+
+        const response = await fetch(`/api/usage?${params}`);
+        const data = await response.json();
+
+        if (response.ok) {
+          displayData(data);
+        } else {
+          alert('Error: ' + data.error);
+        }
+      } catch (error) {
+        alert('Failed to load data: ' + error.message);
+      }
+    }
+
+    function displayData(usersData) {
+      if (!Array.isArray(usersData) || usersData.length === 0) {
+        document.getElementById('usersTableBody').innerHTML = 
+          '<tr><td colspan="4" class="px-6 py-8 text-center text-gray-500">No data available</td></tr>';
+        return;
+      }
+
+      // Update summary stats
+      const totalSpend = usersData.reduce((sum, u) => sum + u.totalCost, 0);
+      const avgPerUser = usersData.length > 0 ? totalSpend / usersData.length : 0;
+      const topSpender = usersData[0]?.user || '—';
+
+      document.getElementById('totalSpend').textContent = `$${totalSpend.toFixed(2)}`;
+      document.getElementById('activeUsers').textContent = usersData.length;
+      document.getElementById('avgPerUser').textContent = `$${avgPerUser.toFixed(2)}`;
+      document.getElementById('topSpender').textContent = topSpender;
+
+      // Update table
+      const tbody = document.getElementById('usersTableBody');
+      tbody.innerHTML = usersData.map(user => {
+        const topModel = Object.values(user.models).sort((a, b) => b.cost - a.cost)[0];
+        const totalTokens = Object.values(user.models).reduce((sum, m) => sum + m.quantity, 0);
+
+        return `
+          <tr class="border-b border-gray-200 hover:bg-gray-50">
+            <td class="px-6 py-4 text-sm text-gray-900 font-medium">${user.user}</td>
+            <td class="px-6 py-4 text-sm text-right text-gray-900">$${user.totalCost.toFixed(2)}</td>
+            <td class="px-6 py-4 text-sm text-right text-gray-600">${totalTokens.toLocaleString()}</td>
+            <td class="px-6 py-4 text-sm text-gray-600">${topModel?.model || '—'}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // Event listeners
+    document.getElementById('refreshBtn').addEventListener('click', loadUsageData);
+    document.getElementById('yearSelect').addEventListener('change', loadUsageData);
+    document.getElementById('monthSelect').addEventListener('change', loadUsageData);
+
+    // Initial load
+    loadUsageData();
+  </script>
+</body>
+</html>

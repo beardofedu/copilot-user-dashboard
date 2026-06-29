@@ -1,0 +1,21 @@
+{
+  "name": "copilot-user-dashboard",
+  "version": "1.0.0",
+  "description": "Dashboard for monitoring GitHub Copilot AI spend metrics by user",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": ["github", "copilot", "dashboard", "billing", "metrics"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.3.0"
+  }
+}
