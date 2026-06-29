@@ -9,6 +9,8 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_ORG = process.env.GITHUB_ORG;
 const GITHUB_ENTERPRISE = process.env.GITHUB_ENTERPRISE;
 const API_VERSION = '2026-03-10';
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const REQUEST_DELAY_MS = 350;
 
 const github = axios.create({
   baseURL: 'https://api.github.com',
@@ -18,6 +20,8 @@ const github = axios.create({
     'X-GitHub-Api-Version': API_VERSION
   }
 });
+const usageCache = new Map();
+const inflightRequests = new Map();
 
 function usageAmount(item) {
   return item.netAmount > 0 ? item.netAmount : item.grossAmount;
@@ -30,6 +34,40 @@ function usageQuantity(item) {
 function usagePath() {
   if (GITHUB_ENTERPRISE) {
     return `/enterprises/${GITHUB_ENTERPRISE}/settings/billing/ai_credit/usage`;
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function cacheKey(year, month) {
+    return `${year || 'current'}-${month || 'current'}`;
+  }
+
+  function getCachedUsage(year, month) {
+    const key = cacheKey(year, month);
+    const entry = usageCache.get(key);
+    if (!entry) {
+      return null;
+    }
+    if (Date.now() - entry.timestamp > CACHE_TTL_MS) {
+      usageCache.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  function setCachedUsage(year, month, data) {
+    usageCache.set(cacheKey(year, month), {
+      timestamp: Date.now(),
+      data
+    });
+  }
+
+  function isSecondaryRateLimit(error) {
+    const status = error?.response?.status;
+    const message = String(error?.response?.data?.message || error?.message || '').toLowerCase();
+    return status === 403 && message.includes('secondary rate limit');
   }
   return `/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`;
 }
@@ -108,41 +146,63 @@ async function fetchOrganizationTotal(year, month) {
 
 // Fetch AI credit usage grouped by user
 async function getAICreditUsageByUser(year, month) {
+  const cached = getCachedUsage(year, month);
+  if (cached) {
+    return cached;
+  }
+
+  const key = cacheKey(year, month);
+  const inFlight = inflightRequests.get(key);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const fetchPromise = (async () => {
   try {
     const members = await listOrgMembers();
     if (members.length === 0) {
-      return [await fetchOrganizationTotal(year, month)];
+      const total = [await fetchOrganizationTotal(year, month)];
+      setCachedUsage(year, month, total);
+      return total;
     }
 
     const userRows = [];
-    const batchSize = 10;
 
-    for (let i = 0; i < members.length; i += batchSize) {
-      const batch = members.slice(i, i + batchSize);
-      const batchResults = await Promise.all(
-        batch.map(async username => {
-          try {
-            const data = await fetchUsage(username, year, month);
-            const usageItems = Array.isArray(data.usageItems) ? data.usageItems : [];
-            const row = buildUserUsage(username, usageItems);
-            return row.totalCost > 0 ? row : null;
-          } catch (error) {
-            return null;
-          }
-        })
-      );
-      userRows.push(...batchResults.filter(Boolean));
+    for (const username of members) {
+      try {
+        const data = await fetchUsage(username, year, month);
+        const usageItems = Array.isArray(data.usageItems) ? data.usageItems : [];
+        const row = buildUserUsage(username, usageItems);
+        if (row.totalCost > 0) {
+          userRows.push(row);
+        }
+      } catch (error) {
+        if (isSecondaryRateLimit(error)) {
+          break;
+        }
+      }
+      await sleep(REQUEST_DELAY_MS);
     }
 
     if (userRows.length === 0) {
-      return [await fetchOrganizationTotal(year, month)];
+      const total = [await fetchOrganizationTotal(year, month)];
+      setCachedUsage(year, month, total);
+      return total;
     }
 
-    return userRows.sort((a, b) => b.totalCost - a.totalCost);
+    const sorted = userRows.sort((a, b) => b.totalCost - a.totalCost);
+    setCachedUsage(year, month, sorted);
+    return sorted;
   } catch (error) {
     console.error('Error fetching AI credit usage:', error.message);
     throw error;
+  } finally {
+    inflightRequests.delete(key);
   }
+  })();
+
+  inflightRequests.set(key, fetchPromise);
+  return fetchPromise;
 }
 
 // API endpoint to get usage data
@@ -155,10 +215,14 @@ app.get('/api/usage', async (req, res) => {
     console.error('Full error:', error.response?.data || error.message);
     const statusCode = error.response?.status || 500;
     const errorMessage = error.response?.data?.message || error.message;
-    
-    if (statusCode === 403) {
-      res.status(403).json({ 
-        error: 'Permission denied (403). Ensure your token has Organization Administration read permissions and you are an org owner or have proper admin access.' 
+
+    if (isSecondaryRateLimit(error)) {
+      res.status(429).json({
+        error: 'GitHub secondary rate limit reached. Wait a few minutes and refresh.'
+      });
+    } else if (statusCode === 403) {
+      res.status(403).json({
+        error: 'Permission denied (403). Ensure your token has Organization Administration read permissions and you are an org owner or have proper admin access.'
       });
     } else {
       res.status(statusCode).json({ error: errorMessage });
