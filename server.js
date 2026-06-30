@@ -12,7 +12,7 @@ const API_VERSION = '2026-03-10';
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const REQUEST_DELAY_MS = 350;
 const API_TIMEOUT_MS = 8000;
-const TOTAL_FETCH_TIMEOUT_MS = 20000;
+const TOTAL_FETCH_TIMEOUT_MS = 60000;
 const DEFAULT_USER_LIMIT = Number(process.env.USER_MONTHLY_LIMIT || 250);
 const DEFAULT_NEAR_LIMIT_PERCENT = Number(process.env.NEAR_LIMIT_PERCENT || 0.8);
 const ORG_USAGE_PATH = `/organizations/${GITHUB_ORG}/settings/billing/ai_credit/usage`;
@@ -31,6 +31,7 @@ const github = axios.create({
 });
 const usageCache = new Map();
 const inflightRequests = new Map();
+const usageDiagnostics = new Map();
 let useEnterprisePath = Boolean(ENTERPRISE_USAGE_PATH);
 let warnedEnterpriseFallback = false;
 
@@ -75,6 +76,10 @@ function setCachedUsage(year, month, data) {
     timestamp: Date.now(),
     data
   });
+}
+
+function setUsageDiagnostics(year, month, diagnostics) {
+  usageDiagnostics.set(cacheKey(year, month), diagnostics);
 }
 
 function isSecondaryRateLimit(error) {
@@ -259,10 +264,16 @@ async function getAICreditUsageByUser(year, month) {
     if (members.length === 0) {
       const total = [await fetchOrganizationTotal(year, month)];
       setCachedUsage(year, month, total);
+      setUsageDiagnostics(year, month, {
+        userLevelAvailable: false,
+        reason: 'No organization members returned from /orgs/{org}/members.'
+      });
       return total;
     }
 
     const userRows = [];
+    let failedUserCalls = 0;
+    let secondaryRateLimited = false;
 
     for (const username of members) {
       try {
@@ -273,7 +284,9 @@ async function getAICreditUsageByUser(year, month) {
           userRows.push(row);
         }
       } catch (error) {
+        failedUserCalls += 1;
         if (isSecondaryRateLimit(error)) {
+          secondaryRateLimited = true;
           break;
         }
       }
@@ -283,11 +296,23 @@ async function getAICreditUsageByUser(year, month) {
     if (userRows.length === 0) {
       const total = [await fetchOrganizationTotal(year, month)];
       setCachedUsage(year, month, total);
+      setUsageDiagnostics(year, month, {
+        userLevelAvailable: false,
+        reason: secondaryRateLimited
+          ? 'GitHub secondary rate limit prevented per-user fetches.'
+          : useEnterprisePath
+            ? `No successful per-user responses. Failed calls: ${failedUserCalls}/${members.length}.`
+            : 'Per-user filtering is unavailable in org mode for enterprise-owned orgs. Ensure GITHUB_ENTERPRISE is set and valid.'
+      });
       return total;
     }
 
     const sorted = userRows.sort((a, b) => b.totalCost - a.totalCost);
     setCachedUsage(year, month, sorted);
+    setUsageDiagnostics(year, month, {
+      userLevelAvailable: true,
+      reason: null
+    });
     return sorted;
   } catch (error) {
     console.error('Error fetching AI credit usage:', error.message);
@@ -298,6 +323,10 @@ async function getAICreditUsageByUser(year, month) {
   })(), TOTAL_FETCH_TIMEOUT_MS).catch(async () => {
     const total = [await fetchOrganizationTotal(year, month)];
     setCachedUsage(year, month, total);
+    setUsageDiagnostics(year, month, {
+      userLevelAvailable: false,
+      reason: `Timed out while fetching per-user usage after ${TOTAL_FETCH_TIMEOUT_MS / 1000}s.`
+    });
     inflightRequests.delete(key);
     return total;
   });
@@ -314,6 +343,7 @@ app.get('/api/usage', async (req, res) => {
     const nearLimitPercent = parseNearLimitPercent(near_limit_percent, DEFAULT_NEAR_LIMIT_PERCENT);
 
     const usageRows = await getAICreditUsageByUser(year, month);
+    const diagnostics = usageDiagnostics.get(cacheKey(year, month));
     const users = enrichUsers(usageRows, userLimit, nearLimitPercent);
     const userLevelAvailable = users.some(row => row.user !== 'Organization Total');
     const scopedUsers = users.filter(row => row.user !== 'Organization Total');
@@ -327,6 +357,7 @@ app.get('/api/usage', async (req, res) => {
       meta: {
         userLevelAvailable,
         mode: useEnterprisePath ? 'enterprise' : 'organization',
+        reason: diagnostics?.reason || null,
         userLimit,
         nearLimitPercent
       },

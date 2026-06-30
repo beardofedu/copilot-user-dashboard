@@ -179,7 +179,9 @@
       const notice = document.getElementById('notice');
       if (meta.userLevelAvailable === false) {
         notice.classList.remove('hidden');
-        notice.textContent = 'User-level data is unavailable with the current endpoint/permissions. Showing organization totals.';
+        notice.textContent = meta.reason
+          ? `User-level data unavailable: ${meta.reason} Showing organization totals.`
+          : 'User-level data is unavailable with the current endpoint/permissions. Showing organization totals.';
       } else {
         notice.classList.add('hidden');
         notice.textContent = '';
